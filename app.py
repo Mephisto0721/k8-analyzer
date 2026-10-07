@@ -10,20 +10,31 @@ st.title("体彩快乐8历史分析")
 @st.cache_data
 def load_data():
     try:
-        df = pd.read_csv('data/k8.csv')
+        df = pd.read_excel('data/k8.xlsx')
+        df['numbers'] = df['numbers'].fillna('').astype(str)
+        # 新增：只保留我们需要的那三列
+        df = df[['issue', 'date', 'numbers']]
         return df
     except Exception as e:
-        st.error(f"读取数据失败，请确认 data/k8.csv 是否存在！错误：{e}")
+        st.error(f"读取数据失败，请确认 data/k8.xlsx 是否存在！错误：{e}")
         st.stop()
 
 df = load_data()
-
+# 把空行直接丢掉，防止后面处理时崩溃
+df = df.dropna(subset=['numbers'])
+df['numbers'] = df['numbers'].astype(str)  # 确保都是字符串
 # 2. 提取每期的20个号码
 all_draws = df['numbers'].astype(str).str.split(' ').tolist()
 # 展平所有号码，用于统计频率
-all_numbers_flat = [int(num) for draw in all_draws for num in draw if num and num.isdigit()]
-freq_counter = Counter(all_numbers_flat)
+all_numbers_flat = []
+for draw in all_draws:
+    if isinstance(draw, list):  # 确保它是列表才遍历，过滤掉空值（float）
+        for num in draw:
+            if num and str(num).isdigit(): # 确保是数字才转换
+                all_numbers_flat.append(int(num))
 
+# 原来的第27行保留
+freq_counter = Counter(all_numbers_flat)
 # 3. 展示频率统计
 st.header("📊 号码频率统计 (1-80)")
 freq_data = [{"号码": i, "出现次数": freq_counter.get(i, 0)} for i in range(1, 81)]
@@ -35,7 +46,7 @@ st.header("📋 最新开奖数据")
 st.dataframe(df.tail(10), use_container_width=True)
 
 # ==========================================
-# 5. 智能选号与历史记录（单注生成 + 保存）
+# 5. 智能选号与历史记录（支持选四到选十）
 # ==========================================
 st.markdown("---")
 st.header("🎯 智能选号辅助 (仅供娱乐)")
@@ -50,9 +61,17 @@ if 'current_pick' not in st.session_state:
 # 用户设置
 col1, col2 = st.columns(2)
 with col1:
-    play_type = st.selectbox("选择玩法：", ["选十 (挑10个号码)", "选二十 (挑20个号码)"])
+    # 修改这里：将玩法改成“选四”到“选十”
+    play_options = ["选四 (挑4个号码)", "选五 (挑5个号码)", "选六 (挑6个号码)", "选七 (挑7个号码)", "选八 (挑8个号码)", "选九 (挑9个号码)", "选十 (挑10个号码)"]
+    play_type = st.selectbox("选择玩法：", play_options)
 with col2:
     strategy = st.selectbox("选择选号策略：", ["冷热结合（推荐）", "随机生成（纯机选）"])
+
+# 提取玩法对应的号码个数
+play_map = {"选四": 4, "选五": 5, "选六": 6, "选七": 7, "选八": 8, "选九": 9, "选十": 10}
+# 提取 play_type 的前两个字，例如 "选四 (挑4个号码)" -> "选四"
+play_key = play_type[:2]
+num_count = play_map.get(play_key, 10)  # 默认选十
 
 # 计算冷热号（用于冷热结合策略）
 recent_df = df.tail(30)
@@ -76,32 +95,33 @@ cold_nums = sorted(omission_dict, key=omission_dict.get, reverse=True)[:15]
 
 # 生成单注号码的逻辑
 if st.button("生成一注号码"):
-    num_count = 10 if "选十" in play_type else 20
-    
     if strategy == "冷热结合（推荐）":
         picks = set()
+        # 如果是选四，正好2热2冷；如果选五以上，再随机补足
         picks.update(random.sample(hot_nums, min(2, len(hot_nums))))
         picks.update(random.sample(cold_nums, min(2, len(cold_nums))))
         while len(picks) < num_count:
             picks.add(random.randint(1, 80))
         final_picks = sorted(list(picks))
     else:
+        # 纯随机
         final_picks = sorted(random.sample(range(1, 81), num_count))
         
     num_str = " ".join(f"{n:02d}" for n in final_picks)
     
     # 暂存当前生成的号码
     st.session_state.current_pick = {
+        "玩法": play_key,
         "号码": num_str,
-        "玩法": play_type,
+        "选号个数": num_count,
         "策略": strategy
     }
 
 # 展示当前生成的号码，并提供保存按钮
 if st.session_state.current_pick:
-    st.success("当前生成的号码如下：")
+    st.success(f"当前生成的【{st.session_state.current_pick['玩法']}】号码如下：")
     st.code(st.session_state.current_pick["号码"], language=None)
-    st.caption(f"玩法：{st.session_state.current_pick['玩法']} | 策略：{st.session_state.current_pick['策略']}")
+    st.caption(f"选号个数：{st.session_state.current_pick['选号个数']} | 策略：{st.session_state.current_pick['策略']}")
     
     if st.button("💾 保存到历史记录"):
         # 补充一个编号
@@ -117,9 +137,9 @@ if st.session_state.history_records:
     st.subheader("📋 历史生成记录")
     
     hist_df = pd.DataFrame(st.session_state.history_records)
-    # 调整列顺序，把序号放最前面
-    cols = ['序号'] + [c for c in hist_df.columns if c != '序号']
-    hist_df = hist_df[cols]
+    # 调整列顺序，把序号、玩法放前面
+    cols = ['序号', '玩法', '号码', '选号个数', '策略']
+    hist_df = hist_df[[c for c in cols if c in hist_df.columns]]
     
     tab1, tab2 = st.tabs(["当前历史列表", "下载/清空"])
     
